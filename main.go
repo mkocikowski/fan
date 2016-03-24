@@ -4,14 +4,13 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
 	"sync"
 )
 
-func run(in, out chan string, wg *sync.WaitGroup) {
+func run(in, out chan []byte, wg *sync.WaitGroup) {
 
 	wg.Add(1)
 	defer wg.Done()
@@ -26,22 +25,22 @@ func run(in, out chan string, wg *sync.WaitGroup) {
 		wg.Add(1)
 		defer wg.Done()
 		for scanner.Scan() {
-			out <- scanner.Text()
+			b := scanner.Bytes()
+			c := make([]byte, len(b), len(b)+1)
+			copy(c, b)
+			out <- append(c, '\n')
 		}
-		log.Println("exiting scanner")
 	}()
 
-	for s := range in {
-		i, err := io.WriteString(stdin, s+"\n")
+	for b := range in {
+		i, err := stdin.Write(b)
 		if err != nil {
 			log.Println(i, err)
 		}
 	}
 
-	stdin.Close() // make child process exit
+	stdin.Close() // signal for child process to exit
 	cmd.Wait()
-	log.Printf("exiting %v\n", cmd.Process)
-
 }
 
 func init() {
@@ -61,9 +60,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	in := make(chan []byte)
+	out := make(chan []byte)
+
 	var wg sync.WaitGroup
-	in := make(chan string)
-	out := make(chan string)
 	for i := 0; i < n; i++ {
 		go run(in, out, &wg)
 	}
@@ -71,17 +71,17 @@ func main() {
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
-			t := scanner.Text()
-			in <- t
+			b := scanner.Bytes()
+			c := make([]byte, len(b), len(b)+1)
+			copy(c, b)
+			in <- append(c, '\n')
 		}
 		close(in)
 		wg.Wait() // wait for all children to finish
 		close(out)
 	}()
 
-	for s := range out {
-		fmt.Println(s)
+	for b := range out {
+		os.Stdout.Write(b)
 	}
-	log.Println("out of out")
-
 }
