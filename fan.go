@@ -18,7 +18,7 @@ var (
 
 func init() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: np [-n numprocs] command\n")
+		fmt.Fprintf(os.Stderr, "usage: fan [-n numprocs] command\n")
 		flag.PrintDefaults()
 	}
 }
@@ -40,15 +40,18 @@ func worker() {
 	}
 
 	wg.Add(1) // removed in goroutine below
-	output := bufio.NewScanner(cmdStdout)
+	output := bufio.NewReader(cmdStdout)
 	go func() {
 		defer wg.Done()
 		// this will keep on going until the command's stdout is exhausted
-		for output.Scan() {
-			b := output.Bytes()
-			c := make([]byte, len(b), len(b)+1)
+		for {
+			b, err := output.ReadBytes('\n')
+			if err != nil {
+				break
+			}
+			c := make([]byte, len(b))
 			copy(c, b)
-			outChan <- append(c, '\n')
+			outChan <- c
 		}
 		// by now the enclosing goroutine would have exited having exhausted the input
 		cmd.Wait()
@@ -73,18 +76,25 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
+	if n < 1 {
+		fmt.Fprintln(os.Stderr, "n must be > 0")
+		os.Exit(1)
+	}
 
 	for i := 0; i < n; i++ {
 		go worker()
 	}
 
 	go func() {
-		input := bufio.NewScanner(os.Stdin)
-		for input.Scan() {
-			b := input.Bytes()
-			c := make([]byte, len(b), len(b)+1)
+		input := bufio.NewReader(os.Stdin)
+		for {
+			b, err := input.ReadBytes('\n')
+			if err != nil {
+				break
+			}
+			c := make([]byte, len(b))
 			copy(c, b)
-			inChan <- append(c, '\n')
+			inChan <- c
 		}
 		close(inChan)  // signal to workers to wrap things up
 		wg.Wait()      // wait for all workers
