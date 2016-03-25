@@ -24,7 +24,6 @@ func init() {
 }
 
 func worker() {
-	defer wg.Done()
 
 	cmd := exec.Command(flag.Args()[0], flag.Args()[1:]...)
 	cmdStdin, err := cmd.StdinPipe()
@@ -35,27 +34,34 @@ func worker() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cmd.Start()
+	err = cmd.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
 
+	wg.Add(1) // removed in goroutine below
 	output := bufio.NewScanner(cmdStdout)
 	go func() {
+		defer wg.Done()
+		// this will keep on going until the command's stdout is exhausted
 		for output.Scan() {
 			b := output.Bytes()
 			c := make([]byte, len(b), len(b)+1)
 			copy(c, b)
 			outChan <- append(c, '\n')
 		}
+		// by now the enclosing goroutine would have exited having exhausted the input
+		cmd.Wait()
 	}()
 
 	for line := range inChan {
 		i, err := cmdStdin.Write(line)
 		if err != nil {
-			log.Println(i, err)
+			log.Fatal(i, err)
 		}
 	}
-
-	cmdStdin.Close() // signal for child process to exit
-	cmd.Wait()
+	// closing command's stdin will make it exit once done processing
+	cmdStdin.Close()
 }
 
 func main() {
@@ -69,7 +75,6 @@ func main() {
 	}
 
 	for i := 0; i < n; i++ {
-		wg.Add(1)
 		go worker()
 	}
 
@@ -81,7 +86,7 @@ func main() {
 			copy(c, b)
 			inChan <- append(c, '\n')
 		}
-		close(inChan)  // signal to workers to exit
+		close(inChan)  // signal to workers to wrap things up
 		wg.Wait()      // wait for all workers
 		close(outChan) // signal completion to exit main loop
 	}()

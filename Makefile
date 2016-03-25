@@ -10,7 +10,7 @@ test.out: test.in np test.py
 
 .INTERMEDIATE: test.in
 test.in:
-	for i in {1..10} ; do echo $$i ; done >$@
+	for i in {1..100000} ; do echo $$i ; done >$@
 
 .INTERMEDIATE: np
 np: main.go
