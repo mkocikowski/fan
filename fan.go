@@ -7,17 +7,22 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 )
 
 var (
-	inChan  = make(chan []byte)
-	outChan = make(chan []byte)
-	wg      sync.WaitGroup
+	inChan    = make(chan []byte)
+	outChan   = make(chan []byte)
+	wg        sync.WaitGroup
+	BuildHash string
+	BuildDate string
+	Version   = "0.1.0"
 )
 
 func init() {
 	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "v%s %s %s\n", Version, BuildHash, BuildDate)
 		fmt.Fprintf(os.Stderr, "usage: fan [-n numprocs] command\n")
 		flag.PrintDefaults()
 	}
@@ -70,14 +75,14 @@ func worker() {
 func main() {
 
 	var n int
-	flag.IntVar(&n, "n", 1, "number of processes to run")
+	flag.IntVar(&n, "n", runtime.NumCPU(), "number of processes to run")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		flag.Usage()
 		os.Exit(1)
 	}
 	if n < 1 {
-		fmt.Fprintln(os.Stderr, "n must be > 0")
+		fmt.Fprintln(os.Stderr, "error: n must be > 0")
 		os.Exit(1)
 	}
 
