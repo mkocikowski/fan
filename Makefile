@@ -38,13 +38,26 @@ args: fan
 .PHONY: install
 install: /usr/local/bin/fan
 
-/usr/local/bin/fan: fan fan.go
+/usr/local/bin/fan: fan
 	sudo cp $< /usr/local/bin/fan
 
 .INTERMEDIATE: fan
 fan: fan.go
-	GOARCH=amd64 GOOS=darwin go build \
+	go build \
 		-race \
 		-ldflags "-X main.BuildHash=$(HASH) -X main.BuildDate=$(DATE)" \
 		-o $@ $<
+
+dist: fan-linux-amd64 fan-darwin-amd64
+
+.INTERMEDIATE: fan-linux-amd64
+.INTERMEDIATE: fan-darwin-amd64
+fan-%-amd64: URL=gs://peakunicorn/bin/amd64/$*/fan
+fan-%-amd64: fan.go test
+	GOARCH=amd64 GOOS=$* go build \
+		-ldflags "-X main.BuildHash=$(HASH) -X main.BuildDate=$(DATE)" \
+		-o $@ $<
+	gsutil cp $@ $(URL)
+	gsutil setmeta -h "Cache-Control:public, max-age=60" $(URL)
+	gsutil acl ch -u AllUsers:R $(URL)
 
