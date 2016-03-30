@@ -38,12 +38,13 @@ args: fan
 .PHONY: install
 install: /usr/local/bin/fan
 
-/usr/local/bin/fan: fan
+/usr/local/bin/fan: fan fan.go
 	sudo cp $< /usr/local/bin/fan
 
 .INTERMEDIATE: fan
 fan: fan.go
 	GOARCH=amd64 GOOS=darwin go build \
+		-race \
 		-ldflags "-X main.BuildHash=$(HASH) -X main.BuildDate=$(DATE)" \
 		-o $@ $<
 
