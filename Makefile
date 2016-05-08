@@ -39,7 +39,7 @@ args: fan
 install: /usr/local/bin/fan
 
 /usr/local/bin/fan: fan
-	sudo cp $< /usr/local/bin/fan
+	cp $< /usr/local/bin/fan
 
 .INTERMEDIATE: fan
 fan: fan.go

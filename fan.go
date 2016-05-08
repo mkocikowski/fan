@@ -102,7 +102,7 @@ func run(n int, args []string) {
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "v%s %s %s\n", Version, BuildHash, BuildDate)
+		fmt.Fprintf(os.Stderr, "v%s %s %s %s\n", Version, BuildHash, BuildDate, runtime.Version())
 		fmt.Fprintf(os.Stderr, "usage: fan [-n numprocs] command\n")
 		flag.PrintDefaults()
 	}
