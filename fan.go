@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -15,16 +16,16 @@ var (
 	BuildHash string
 	BuildDate string
 	Version   = "0.1.0"
+	wg        sync.WaitGroup
 )
 
-func worker(in, out chan []byte, args []string, wg *sync.WaitGroup) {
-
+func spawnWorker(args []string) (io.WriteCloser, io.ReadCloser) {
 	cmd := exec.Command(args[0], args[1:]...)
-	cmdStdin, err := cmd.StdinPipe()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		log.Fatal(err)
 	}
-	cmdStdout, err := cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,71 +33,73 @@ func worker(in, out chan []byte, args []string, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	output := bufio.NewReader(cmdStdout)
-	go func() {
-		defer wg.Done()
-		// this will keep on going until the command's stdout is exhausted
-		for {
-			b, err := output.ReadBytes('\n')
-			if err != nil {
-				break
-			}
-			c := make([]byte, len(b))
-			copy(c, b)
-			out <- c
-		}
-		// by now the enclosing goroutine would have exited having exhausted the input
-		cmd.Wait()
-	}()
-
-	for line := range in {
-		i, err := cmdStdin.Write(line)
-		if err != nil {
-			log.Fatal(i, err)
-		}
-	}
-	// closing command's stdin will make it exit once done processing
-	cmdStdin.Close()
-	// inner goroutine will continue reading command stdout until exhausted
+	wg.Add(1)
+	return stdin, stdout
 }
 
-func run(n int, args []string) {
-
-	if n < 1 {
-		log.Fatal("n must be > 0")
-	}
-	if len(args) < 1 {
-		log.Fatal("command missing")
-	}
-
-	var wg sync.WaitGroup
-	in := make(chan []byte)
-	out := make(chan []byte)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go worker(in, out, args, &wg)
-	}
-
+func attachWorker(workerInput io.WriteCloser, workerOutput io.Reader, dataIn, dataOut chan []byte) {
 	go func() {
-		input := bufio.NewReader(os.Stdin)
+		defer wg.Done()
+		workerOutputBuf := bufio.NewReader(workerOutput)
 		for {
-			b, err := input.ReadBytes('\n')
+			b, err := workerOutputBuf.ReadBytes('\n')
 			if err != nil {
-				break
+				break // TODO: deal with partial reads, errors?
 			}
 			c := make([]byte, len(b))
 			copy(c, b)
-			in <- c
+			dataOut <- c
 		}
-		close(in)  // signal to workers to wrap things up
-		wg.Wait()  // wait for all workers
-		close(out) // signal completion to exit main loop
 	}()
+	workerInputBuf := bufio.NewWriter(workerInput)
+	for line := range dataIn {
+		_, err := workerInputBuf.Write(line)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	workerInputBuf.Flush()
+	workerInput.Close() // closing command's stdin will make it exit once done processing
+}
 
-	// this when exit when out chan is closed by the goroutine above
-	for line := range out {
-		os.Stdout.Write(line)
+func createWorkerPool(n int, args []string) (chan []byte, chan []byte) {
+	inChan := make(chan []byte)
+	outChan := make(chan []byte)
+	for i := 0; i < n; i++ {
+		wIn, wOut := spawnWorker(args)
+		go attachWorker(wIn, wOut, inChan, outChan)
+	}
+	return inChan, outChan
+}
+
+func feedDataToWorkerPool(fanInput io.Reader, workersInputChan chan []byte) {
+	inputBuf := bufio.NewReader(fanInput)
+	for {
+		b, err := inputBuf.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		c := make([]byte, len(b))
+		copy(c, b)
+		workersInputChan <- c
+	}
+	close(workersInputChan)
+}
+
+func run(n int, args []string, fanInput io.Reader, fanOutput io.Writer) {
+	workersInputChan, workersOutputChan := createWorkerPool(n, args)
+	go feedDataToWorkerPool(fanInput, workersInputChan)
+	go func() {
+		wg.Wait()
+		// all the workers have exited, so there is no one writing to the
+		// output chan, so close it to signal completion
+		close(workersOutputChan)
+	}()
+	outputBuf := bufio.NewWriter(fanOutput)
+	defer outputBuf.Flush()
+	// this when exit when output chan is closed by the goroutine above
+	for line := range workersOutputChan {
+		outputBuf.Write(line)
 	}
 }
 
@@ -117,5 +120,5 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	run(n, flag.Args())
+	run(n, flag.Args(), os.Stdin, os.Stdout)
 }

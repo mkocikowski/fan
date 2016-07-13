@@ -4,7 +4,11 @@ HASH:=$(shell git rev-parse --short HEAD)
 DATE:=$(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 .PHONY: test
-test: args 100k long
+test: gotest args 100k long
+
+.PHONY: gotest
+gotest:
+	go test -v
 
 .PHONY: 100k
 100k: fan
