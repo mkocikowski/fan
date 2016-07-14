@@ -19,88 +19,129 @@ var (
 	wg        sync.WaitGroup
 )
 
-func spawnWorker(args []string) (io.WriteCloser, io.ReadCloser) {
-	cmd := exec.Command(args[0], args[1:]...)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = cmd.Start()
-	if err != nil {
-		log.Fatal(err)
-	}
-	wg.Add(1)
-	return stdin, stdout
+type worker interface {
+	work(wg *sync.WaitGroup)
+	getErr() error
 }
 
-func attachWorker(workerInput io.WriteCloser, workerOutput io.Reader, dataIn, dataOut chan []byte) {
+type processWorker struct {
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	input  chan []byte
+	output chan []byte
+	cmd    *exec.Cmd
+	err    error
+}
+
+type workerFactory func(args []string, input, output chan []byte) (*processWorker, error)
+
+func newProcessWorker(args []string, input, output chan []byte) (*processWorker, error) {
+	cmd := exec.Command(args[0], args[1:]...)
+	w := processWorker{
+		cmd:    cmd,
+		input:  input,
+		output: output,
+	}
+	w.stdin, _ = cmd.StdinPipe()
+	w.stdout, _ = cmd.StdoutPipe()
+	err := w.cmd.Start()
+	return &w, err
+}
+
+func (w *processWorker) work(wg *sync.WaitGroup) {
+	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		workerOutputBuf := bufio.NewReader(workerOutput)
-		for {
-			b, err := workerOutputBuf.ReadBytes('\n')
-			if err != nil {
-				break // TODO: deal with partial reads, errors?
+		go func() {
+			defer wg.Done()
+			workerOutputBuf := bufio.NewReader(w.stdout)
+			for {
+				b, err := workerOutputBuf.ReadBytes('\n')
+				if err != nil { // most likely EOF
+					if err := w.cmd.Wait(); err != nil {
+						log.Fatal(err)
+					}
+					break
+				}
+				w.output <- b
 			}
-			c := make([]byte, len(b))
-			copy(c, b)
-			dataOut <- c
+		}()
+		workerInputBuf := bufio.NewWriter(w.stdin)
+		for line := range w.input {
+			_, err := workerInputBuf.Write(line)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
+		workerInputBuf.Flush()
+		w.stdin.Close() // closing command's stdin will make it exit once done processing
 	}()
-	workerInputBuf := bufio.NewWriter(workerInput)
-	for line := range dataIn {
-		_, err := workerInputBuf.Write(line)
+}
+
+func (w *processWorker) getErr() error {
+	return w.err
+}
+
+type workerPool struct {
+	input  chan []byte
+	output chan []byte
+	errors chan []byte
+	n      int
+	args   []string
+	wg     *sync.WaitGroup
+}
+
+func newWorkerPool(n int, args []string, f workerFactory) *workerPool {
+	pool := &workerPool{
+		input:  make(chan []byte),
+		output: make(chan []byte),
+		n:      n,
+		args:   args,
+		wg:     new(sync.WaitGroup),
+	}
+	for i := 0; i < n; i++ {
+		worker, err := f(args, pool.input, pool.output)
 		if err != nil {
 			log.Fatal(err)
 		}
+		worker.work(pool.wg)
 	}
-	workerInputBuf.Flush()
-	workerInput.Close() // closing command's stdin will make it exit once done processing
+	return pool
 }
 
-func createWorkerPool(n int, args []string) (chan []byte, chan []byte) {
-	inChan := make(chan []byte)
-	outChan := make(chan []byte)
-	for i := 0; i < n; i++ {
-		wIn, wOut := spawnWorker(args)
-		go attachWorker(wIn, wOut, inChan, outChan)
-	}
-	return inChan, outChan
-}
-
-func feedDataToWorkerPool(fanInput io.Reader, workersInputChan chan []byte) {
-	inputBuf := bufio.NewReader(fanInput)
-	for {
-		b, err := inputBuf.ReadBytes('\n')
-		if err != nil {
-			break
-		}
-		c := make([]byte, len(b))
-		copy(c, b)
-		workersInputChan <- c
-	}
-	close(workersInputChan)
-}
-
-func run(n int, args []string, fanInput io.Reader, fanOutput io.Writer) {
-	workersInputChan, workersOutputChan := createWorkerPool(n, args)
-	go feedDataToWorkerPool(fanInput, workersInputChan)
+func (pool *workerPool) work(fanInput io.Reader) {
 	go func() {
-		wg.Wait()
+		inputBuf := bufio.NewReader(fanInput)
+		for {
+			// error when fanInput closed / exhausted
+			b, err := inputBuf.ReadBytes('\n')
+			if err != nil {
+				break
+			}
+			pool.input <- b
+		}
+		close(pool.input)
+	}()
+}
+
+func (pool *workerPool) wait(fanOutput io.Writer) {
+	go func() {
+		pool.wg.Wait()
 		// all the workers have exited, so there is no one writing to the
 		// output chan, so close it to signal completion
-		close(workersOutputChan)
+		close(pool.output)
 	}()
 	outputBuf := bufio.NewWriter(fanOutput)
 	defer outputBuf.Flush()
 	// this when exit when output chan is closed by the goroutine above
-	for line := range workersOutputChan {
+	for line := range pool.output {
 		outputBuf.Write(line)
 	}
+}
+
+func run(n int, args []string, f workerFactory, input io.Reader, output io.Writer) {
+	pool := newWorkerPool(n, args, f)
+	pool.work(input)
+	pool.wait(output)
 }
 
 func main() {
@@ -109,10 +150,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "usage: fan [-n numprocs] command\n")
 		flag.PrintDefaults()
 	}
-	var n int
-	flag.IntVar(&n, "n", runtime.NumCPU(), "number of processes to run")
+	n := flag.Int("n", runtime.NumCPU(), "number of processes to run")
 	flag.Parse()
-	if n < 1 {
+	if *n < 1 {
 		fmt.Fprintln(os.Stderr, "error: n must be > 0")
 		os.Exit(1)
 	}
@@ -120,5 +160,5 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	run(n, flag.Args(), os.Stdin, os.Stdout)
+	run(*n, flag.Args(), newProcessWorker, os.Stdin, os.Stdout)
 }
