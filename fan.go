@@ -16,143 +16,97 @@ var (
 	BuildHash string
 	BuildDate string
 	Version   = "0.1.0"
-	wg        sync.WaitGroup
+	wg        = new(sync.WaitGroup)
 )
 
-type worker interface {
-	work(wg *sync.WaitGroup)
-	getErr() error
-}
-
-type processWorker struct {
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-	input  chan []byte
-	output chan []byte
-	cmd    *exec.Cmd
-	err    error
-}
-
-type workerFactory func(args []string, input, output chan []byte) (*processWorker, error)
-
-func newProcessWorker(args []string, input, output chan []byte) (*processWorker, error) {
+func startWorker(args []string, iChan, oChan chan []byte) {
 	cmd := exec.Command(args[0], args[1:]...)
-	w := processWorker{
-		cmd:    cmd,
-		input:  input,
-		output: output,
+	stdi, _ := cmd.StdinPipe()
+	stdo, _ := cmd.StdoutPipe()
+	if err := cmd.Start(); err != nil {
+		log.Fatal(err)
 	}
-	w.stdin, _ = cmd.StdinPipe()
-	w.stdout, _ = cmd.StdoutPipe()
-	err := w.cmd.Start()
-	return &w, err
-}
-
-func (w *processWorker) work(wg *sync.WaitGroup) {
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
-		go func() {
-			defer wg.Done()
-			workerOutputBuf := bufio.NewReader(w.stdout)
-			for {
-				b, err := workerOutputBuf.ReadBytes('\n')
-				if err != nil { // most likely EOF
-					if err := w.cmd.Wait(); err != nil {
-						log.Fatal(err)
-					}
-					break
+		defer wg.Done()
+		workerOutputBuf := bufio.NewReader(stdo)
+		for {
+			b, err := workerOutputBuf.ReadBytes('\n')
+			if err != nil { // most likely EOF
+				if err := cmd.Wait(); err != nil {
+					log.Fatal(err)
 				}
-				w.output <- b
+				break
 			}
-		}()
-		workerInputBuf := bufio.NewWriter(w.stdin)
-		for line := range w.input {
+			oChan <- b
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		workerInputBuf := bufio.NewWriter(stdi)
+		for line := range iChan {
 			_, err := workerInputBuf.Write(line)
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
 		workerInputBuf.Flush()
-		w.stdin.Close() // closing command's stdin will make it exit once done processing
+		stdi.Close() // closing proces' stdin will make it exit
 	}()
 }
 
-func (w *processWorker) getErr() error {
-	return w.err
-}
-
-type workerPool struct {
-	input  chan []byte
-	output chan []byte
-	errors chan []byte
-	n      int
-	args   []string
-	wg     *sync.WaitGroup
-}
-
-func newWorkerPool(n int, args []string, f workerFactory) *workerPool {
-	pool := &workerPool{
-		input:  make(chan []byte),
-		output: make(chan []byte),
-		n:      n,
-		args:   args,
-		wg:     new(sync.WaitGroup),
-	}
+func run(n int, args []string, r io.Reader, w io.Writer) {
+	iChan := make(chan []byte)
+	oChan := make(chan []byte)
 	for i := 0; i < n; i++ {
-		worker, err := f(args, pool.input, pool.output)
-		if err != nil {
-			log.Fatal(err)
-		}
-		worker.work(pool.wg)
+		startWorker(args, iChan, oChan)
 	}
-	return pool
-}
-
-func (pool *workerPool) work(fanInput io.Reader) {
 	go func() {
-		inputBuf := bufio.NewReader(fanInput)
+		inputBuf := bufio.NewReader(r)
 		for {
-			// error when fanInput closed / exhausted
 			b, err := inputBuf.ReadBytes('\n')
-			if err != nil {
+			if err == io.EOF {
 				break
 			}
-			pool.input <- b
+			if err != nil {
+				log.Fatal(err)
+			}
+			iChan <- b
 		}
-		close(pool.input)
+		close(iChan)
 	}()
-}
-
-func (pool *workerPool) wait(fanOutput io.Writer) {
 	go func() {
-		pool.wg.Wait()
+		wg.Wait()
 		// all the workers have exited, so there is no one writing to the
-		// output chan, so close it to signal completion
-		close(pool.output)
+		// oChan, so close it to signal completion and have run() break
+		close(oChan)
 	}()
-	outputBuf := bufio.NewWriter(fanOutput)
+	outputBuf := bufio.NewWriter(w)
 	defer outputBuf.Flush()
-	// this when exit when output chan is closed by the goroutine above
-	for line := range pool.output {
+	for line := range oChan {
 		outputBuf.Write(line)
 	}
 }
 
-func run(n int, args []string, f workerFactory, input io.Reader, output io.Writer) {
-	pool := newWorkerPool(n, args, f)
-	pool.work(input)
-	pool.wait(output)
-}
+const (
+	usage = `
+fan splits its input on newline and sends individual lines to worker processes
+(specified with 'command') on stdin. It atomically combines stdout from the
+worker processes (line by line) and outputs it on stdout. Error in a worker
+process results in fan shutting down all workers and exiting.`
+)
 
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "v%s %s %s %s\n", Version, BuildHash, BuildDate, runtime.Version())
 		fmt.Fprintf(os.Stderr, "usage: fan [-n numprocs] command\n")
 		flag.PrintDefaults()
+		fmt.Fprintln(os.Stderr, usage)
 	}
-	n := flag.Int("n", runtime.NumCPU(), "number of processes to run")
+	var n int
+	flag.IntVar(&n, "n", runtime.NumCPU(), "number of processes to run")
 	flag.Parse()
-	if *n < 1 {
+	if n < 1 {
 		fmt.Fprintln(os.Stderr, "error: n must be > 0")
 		os.Exit(1)
 	}
@@ -160,5 +114,5 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-	run(*n, flag.Args(), newProcessWorker, os.Stdin, os.Stdout)
+	run(n, flag.Args(), os.Stdin, os.Stdout)
 }

@@ -1,36 +1,32 @@
 package main
 
 import (
-	//"bufio"
 	"bytes"
 	"fmt"
-	//	"io"
-	//	"sync"
 	"testing"
 )
 
 var _ = fmt.Println
 
-//func TestExecWorker(t *testing.T) {
-//	s := "foo"
-//	stdin, stdout := execWorker([]string{"cat"})
-//	stdin.Write([]byte(s))
-//	stdin.Close()
-//	b := make([]byte, len(s))
-//	_, err := stdout.Read(b)
-//	if err != nil {
-//		t.Error(err)
-//	}
-//	if string(b) != s {
-//		t.Errorf("expected '%q' got '%q'", s, string(b))
-//	}
-//}
+func TestStartWorker(t *testing.T) {
+	cmd := []string{"cat"}
+	ic := make(chan []byte)
+	oc := make(chan []byte)
+	startWorker(cmd, ic, oc)
+	s := "foo\n"
+	ic <- []byte(s)
+	close(ic) // flushes input
+	b := <-oc
+	if string(b) != s {
+		t.Errorf("expected '%q' got '%q'", s, string(b))
+	}
+}
 
 func TestRun(t *testing.T) {
 	s := "foo\nbar\nbaz"
 	in := bytes.NewBufferString(s)
 	var out bytes.Buffer
-	run(1, []string{"cat"}, newProcessWorker, in, &out)
+	run(1, []string{"cat"}, in, &out)
 	b := out.Bytes()
 	expect := "foo\nbar\n"
 	if string(b) != expect {
