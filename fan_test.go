@@ -3,10 +3,27 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"testing"
 )
 
 var _ = fmt.Println
+
+func TestSpawnWorker(t *testing.T) {
+	var tests = []struct {
+		cmd string
+		err bool
+	}{
+		{"cat", false},
+		{"foo", true},
+	}
+	for _, test := range tests {
+		err := startWorker([]string{test.cmd}, nil, nil, nil)
+		if err == nil == test.err {
+			t.Error("expected error")
+		}
+	}
+}
 
 func TestStartWorker(t *testing.T) {
 	var tests = []struct {
@@ -16,22 +33,17 @@ func TestStartWorker(t *testing.T) {
 		err      string
 	}{
 		{"cat", "foo\n", "foo\n", ""},
-		{"cat", "foo\nbar", "foo\n", ""}, // missing second newline, will not get sent
-		{"foo", "foo\n", "", "*exec.Error"},
+		{"cat", "foo\nbar", "foo\n", ""},
 		{"false", "foo\n", "", "*exec.ExitError"},
 	}
-
 	for _, test := range tests {
+		wg = new(sync.WaitGroup)
 		ic := make(chan []byte)
 		oc := make(chan []byte)
-		failChan := make(chan error)
-		// check for errors starting a worker
-		err := startWorker([]string{test.cmd}, ic, oc, failChan)
+		errChan := make(chan error, 2)
+		err := startWorker([]string{test.cmd}, ic, oc, errChan)
 		if err != nil {
-			if s := fmt.Sprintf("%T", err); s != test.err {
-				t.Fatalf("expected '%q' got '%q'", test.err, s)
-			}
-			continue
+			t.Fatal("unexpected error: ", err)
 		}
 		ic <- []byte(test.input)
 		close(ic) // flushes input
@@ -40,7 +52,7 @@ func TestStartWorker(t *testing.T) {
 			if string(b) != test.expected {
 				t.Errorf("expected '%q' got '%q'", test.expected, string(b))
 			}
-		case e := <-failChan:
+		case e := <-errChan:
 			if s := fmt.Sprintf("%T", e); s != test.err {
 				t.Fatalf("expected '%q' got '%q'", test.err, s)
 			}
@@ -49,6 +61,7 @@ func TestStartWorker(t *testing.T) {
 }
 
 func TestRun(t *testing.T) {
+	wg = new(sync.WaitGroup)
 	s := "foo\nbar\nbaz"
 	in := bytes.NewBufferString(s)
 	var out bytes.Buffer

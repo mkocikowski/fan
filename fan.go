@@ -19,7 +19,7 @@ var (
 	wg        = new(sync.WaitGroup)
 )
 
-func startWorker(args []string, iChan, oChan chan []byte, failChan chan<- error) error {
+func startWorker(args []string, iChan, oChan chan []byte, errChan chan<- error) error {
 
 	cmd := exec.Command(args[0], args[1:]...)
 	stdi, _ := cmd.StdinPipe()
@@ -36,10 +36,8 @@ func startWorker(args []string, iChan, oChan chan []byte, failChan chan<- error)
 		workerOutputBuf := bufio.NewReader(stdo)
 		for {
 			b, err := workerOutputBuf.ReadBytes('\n')
-			if err != nil { // most likely EOF
-				if err := cmd.Wait(); err != nil {
-					failChan <- err
-				}
+			if err != nil {
+				errChan <- cmd.Wait()
 				return
 			}
 			oChan <- b
@@ -53,11 +51,13 @@ func startWorker(args []string, iChan, oChan chan []byte, failChan chan<- error)
 		for line := range iChan {
 			_, err := stdi.Write(line)
 			if err != nil {
-				failChan <- err
+				errChan <- cmd.Wait()
 				return
 			}
 		}
-		stdi.Close() // closing proces' stdin will make it exit, if it is reading from stdin
+		// closing proces' stdin will make it exit, if it is reading from stdin
+		// so this is a way to gracefuly close a worker process
+		stdi.Close()
 	}()
 
 	return nil
@@ -67,10 +67,10 @@ func run(n int, args []string, r io.Reader, w io.Writer) error {
 
 	iChan := make(chan []byte)
 	oChan := make(chan []byte)
-	failChan := make(chan error)
+	errChan := make(chan error, n*2)
 
 	for i := 0; i < n; i++ {
-		if err := startWorker(args, iChan, oChan, failChan); err != nil {
+		if err := startWorker(args, iChan, oChan, errChan); err != nil {
 			return err
 		}
 	}
@@ -80,27 +80,26 @@ func run(n int, args []string, r io.Reader, w io.Writer) error {
 		inputBuf := bufio.NewReader(r)
 		for {
 			b, err := inputBuf.ReadBytes('\n')
-			if err == io.EOF {
-				break
-			}
+			// ReadBytes returns err != nil if and only if the returned data does not end in delim
 			if err != nil {
-				log.Fatal(err)
+				break
 			}
 			// whichever comes first: a worker reading from the unbuffered channel, or an error coming from a worker
 			select {
 			case iChan <- b:
-			case err := <-failChan:
+			case err := <-errChan:
 				log.Println(err)
 				break
 			}
 		}
+		// when workers try to read on closed channel, they will exit
 		close(iChan)
 	}()
 
 	go func() {
+		// wait for all workers to exit
 		wg.Wait()
-		// all the workers have exited, so there is no one writing to the
-		// oChan, so close it to signal completion and have run() break
+		// closing output channel will terminate run's main loop
 		close(oChan)
 	}()
 
