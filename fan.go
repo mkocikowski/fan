@@ -15,18 +15,22 @@ import (
 var (
 	BuildHash string
 	BuildDate string
-	Version   = "0.1.0"
+	Version   = "0.2.0"
 	wg        = new(sync.WaitGroup)
 )
 
-func startWorker(args []string, iChan, oChan chan []byte) {
+func startWorker(args []string, iChan, oChan chan []byte, failChan chan<- error) error {
+
 	cmd := exec.Command(args[0], args[1:]...)
 	stdi, _ := cmd.StdinPipe()
 	stdo, _ := cmd.StdoutPipe()
+
 	if err := cmd.Start(); err != nil {
-		log.Fatal(err)
+		return err
 	}
-	wg.Add(2)
+
+	wg.Add(1)
+	// collect worker's output; exit when unable to read from worker's stdout
 	go func() {
 		defer wg.Done()
 		workerOutputBuf := bufio.NewReader(stdo)
@@ -34,33 +38,44 @@ func startWorker(args []string, iChan, oChan chan []byte) {
 			b, err := workerOutputBuf.ReadBytes('\n')
 			if err != nil { // most likely EOF
 				if err := cmd.Wait(); err != nil {
-					log.Fatal(err)
+					failChan <- err
 				}
-				break
+				return
 			}
 			oChan <- b
 		}
 	}()
+
+	wg.Add(1)
+	// feed data to worker's input; exit if unable to write, or when the input channel closed
 	go func() {
 		defer wg.Done()
-		workerInputBuf := bufio.NewWriter(stdi)
 		for line := range iChan {
-			_, err := workerInputBuf.Write(line)
+			_, err := stdi.Write(line)
 			if err != nil {
-				log.Fatal(err)
+				failChan <- err
+				return
 			}
 		}
-		workerInputBuf.Flush()
-		stdi.Close() // closing proces' stdin will make it exit
+		stdi.Close() // closing proces' stdin will make it exit, if it is reading from stdin
 	}()
+
+	return nil
 }
 
-func run(n int, args []string, r io.Reader, w io.Writer) {
+func run(n int, args []string, r io.Reader, w io.Writer) error {
+
 	iChan := make(chan []byte)
 	oChan := make(chan []byte)
+	failChan := make(chan error)
+
 	for i := 0; i < n; i++ {
-		startWorker(args, iChan, oChan)
+		if err := startWorker(args, iChan, oChan, failChan); err != nil {
+			return err
+		}
 	}
+
+	// send data from fan's stdin to iChan
 	go func() {
 		inputBuf := bufio.NewReader(r)
 		for {
@@ -71,21 +86,31 @@ func run(n int, args []string, r io.Reader, w io.Writer) {
 			if err != nil {
 				log.Fatal(err)
 			}
-			iChan <- b
+			// whichever comes first: a worker reading from the unbuffered channel, or an error coming from a worker
+			select {
+			case iChan <- b:
+			case err := <-failChan:
+				log.Println(err)
+				break
+			}
 		}
 		close(iChan)
 	}()
+
 	go func() {
 		wg.Wait()
 		// all the workers have exited, so there is no one writing to the
 		// oChan, so close it to signal completion and have run() break
 		close(oChan)
 	}()
+
 	outputBuf := bufio.NewWriter(w)
 	defer outputBuf.Flush()
 	for line := range oChan {
 		outputBuf.Write(line)
 	}
+
+	return nil
 }
 
 const (
