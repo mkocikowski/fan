@@ -50,7 +50,7 @@ fan: fan.go
 	go build \
 		-race \
 		-ldflags "-X main.BuildHash=$(HASH) -X main.BuildDate=$(DATE)" \
-		-o $@ $<
+		-o $@ .
 
 dist: fan-linux-amd64 fan-darwin-amd64
 
