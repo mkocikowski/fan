@@ -28,5 +28,5 @@ More
 ---
 ```sh
 # tee the individual workers' inputs ($$ is the worker PID)
-cat myfile | fan -n=4 bash -c 'tee out.$$ | myscript' >out
+cat myfile | fan -n=4 bash -c 'tee in.$$ | myscript | tee out.$$' >out
 ```

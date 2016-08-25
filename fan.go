@@ -15,7 +15,7 @@ import (
 var (
 	BuildHash string
 	BuildDate string
-	Version   = "0.2.0"
+	Version   = "0.2.1"
 	wg        = new(sync.WaitGroup)
 )
 

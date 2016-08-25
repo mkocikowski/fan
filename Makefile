@@ -48,7 +48,6 @@ install: /usr/local/bin/fan
 .INTERMEDIATE: fan
 fan: fan.go
 	go build \
-		-race \
 		-ldflags "-X main.BuildHash=$(HASH) -X main.BuildDate=$(DATE)" \
 		-o $@ $<
 
