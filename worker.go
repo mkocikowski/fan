@@ -3,12 +3,19 @@ package main
 import (
 	"bufio"
 	"os/exec"
-	"sync"
 )
 
-func startWorker(args []string, wg *sync.WaitGroup, iChan, oChan chan []byte, errChan chan<- error) error {
+type Worker struct {
+	Args    []string
+	Input   chan []byte
+	Output  chan []byte
+	Fail    chan error
+	running bool
+}
 
-	cmd := exec.Command(args[0], args[1:]...)
+func (w *Worker) Start() error {
+
+	cmd := exec.Command(w.Args[0], w.Args[1:]...)
 	stdi, _ := cmd.StdinPipe()
 	stdo, _ := cmd.StdoutPipe()
 
@@ -16,29 +23,29 @@ func startWorker(args []string, wg *sync.WaitGroup, iChan, oChan chan []byte, er
 		return err
 	}
 
-	wg.Add(1)
 	// collect worker's output; exit when unable to read from worker's stdout
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		workerOutputBuf := bufio.NewReader(stdo)
 		for {
 			b, err := workerOutputBuf.ReadBytes('\n')
 			if err != nil {
-				errChan <- cmd.Wait()
+				w.Fail <- cmd.Wait()
 				return
 			}
-			oChan <- b
+			w.Output <- b
 		}
 	}()
 
-	wg.Add(1)
 	// feed data to worker's input; exit if unable to write, or when the input channel closed
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for line := range iChan {
+		for line := range w.Input {
 			_, err := stdi.Write(line)
 			if err != nil {
-				errChan <- cmd.Wait()
+				w.Fail <- cmd.Wait()
 				return
 			}
 		}

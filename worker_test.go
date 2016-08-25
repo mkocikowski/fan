@@ -17,15 +17,15 @@ func TestStartWorker(t *testing.T) {
 		{"foo", true},
 	}
 	for _, test := range tests {
-		wg := new(sync.WaitGroup)
-		err := startWorker([]string{test.cmd}, wg, nil, nil, nil)
+		w := Worker{Args: []string{test.cmd}}
+		err := w.Start()
 		if err == nil == test.err {
 			t.Error("expected error")
 		}
 	}
 }
 
-func TestRunWorker(t *testing.T) {
+func TestWorker(t *testing.T) {
 	var tests = []struct {
 		cmd      string
 		input    string
@@ -37,12 +37,12 @@ func TestRunWorker(t *testing.T) {
 		{"false", "foo\n", "", "*exec.ExitError"},
 	}
 	for _, test := range tests {
-		wg := new(sync.WaitGroup)
+		wg = new(sync.WaitGroup)
 		ic := make(chan []byte)
 		oc := make(chan []byte)
 		errChan := make(chan error, 2)
-		err := startWorker([]string{test.cmd}, wg, ic, oc, errChan)
-		if err != nil {
+		w := Worker{[]string{test.cmd}, ic, oc, errChan}
+		if err := w.Start(); err != nil {
 			t.Fatal("unexpected error: ", err)
 		}
 		ic <- []byte(test.input)

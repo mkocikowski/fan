@@ -27,15 +27,17 @@ func fanOut(r io.Reader, iChan chan<- []byte, errChan <-chan error) {
 	close(iChan)
 }
 
+var wg = new(sync.WaitGroup)
+
 func run(n int, args []string, r io.Reader, w io.Writer) error {
 
 	iChan := make(chan []byte)
 	oChan := make(chan []byte)
 	errChan := make(chan error, n*2)
-	wg := new(sync.WaitGroup)
 
 	for i := 0; i < n; i++ {
-		if err := startWorker(args, wg, iChan, oChan, errChan); err != nil {
+		w := Worker{args, iChan, oChan, errChan}
+		if err := w.Start(); err != nil {
 			return err
 		}
 	}
